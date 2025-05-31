@@ -2,8 +2,8 @@ name: 编译dufs
 
 on:
 #每天北京时间11点 4点自动检测更新
-  schedule:
-   - cron: "0 3,20 * * *"
+#  schedule:
+#   - cron: "0 3,20 * * *"
   workflow_dispatch:
     inputs:
       branch:
