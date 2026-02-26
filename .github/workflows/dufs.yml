@@ -1,9 +1,9 @@
 name: 编译dufs
 
 on:
-#每天北京时间11点 4点自动检测更新
-#  schedule:
-#   - cron: "0 3,20 * * *"
+#每天北京时间11点自动检测更新
+  schedule:
+   - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       branch:
@@ -53,7 +53,7 @@ jobs:
     if: ${{ github.event.inputs.bj == 'true' || (github.event.inputs.bj != 'true' && needs.check.outputs.ver != needs.check.outputs.tag) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: TransparentLC/dufs-material-assets
           ref: master
@@ -162,8 +162,11 @@ jobs:
       TARGET: ${{ matrix.target }}
       URL: ${{ matrix.URL }}
       NAME: ${{ matrix.NAME }}
+    outputs:
+      TAG: ${{ steps.set-tag.outputs.TAG }}
     steps:
       - name: 确定版本号
+        id: set-tag
         shell: bash
         run: |
           if [[ "${{ env.BJ }}" == "true" ]]; then
@@ -182,8 +185,9 @@ jobs:
             TAG=${{ needs.check.outputs.tag }}
             echo "TAG=$TAG" >> $GITHUB_ENV
           fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT 
           
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: sigoden/dufs
           ref: ${{ env.TAG }}
@@ -204,21 +208,29 @@ jobs:
         run: |
           mkdir -p /opt/musl_gcc
           rustup set auto-self-update disable
-          echo "下载https://musl.cc/${{ env.URL }}-cross.tgz"
-          wget -q -c https://musl.cc/${{ env.URL }}-cross.tgz -P /opt/musl_gcc/
+          echo "下载https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz"
+          wget -q -c https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz -P /opt/musl_gcc/
           tar zxf /opt/musl_gcc/${{ env.URL }}-cross.tgz -C /opt/musl_gcc/
           sudo ln -s /opt/musl_gcc/${{ env.URL }}-cross/bin/*gcc /usr/bin/
-          #sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+          sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
           if [[ $TARGET =~ ^mips.*$ ]]; then
-            echo "指定 $TARGET 架构 使用rust 1.74版本，若编译失败 请修改此处升级版本 "
-            rustup install 1.74
-            rustup default 1.74
+            cd "/opt/musl_gcc/${{ env.URL }}-cross/lib/gcc/${{ env.URL }}/11.2.1" || exit 255
+            cp libgcc_eh.a libunwind.a
+            ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
+            ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
+
+            rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
+            rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
+            # https://github.com/rust-lang/rust/issues/128808
+            # remove it after Cargo or rustc fix this.
+            RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
+            if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then 
+               cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
+            fi
           else
-            echo "指定 $TARGET 架构 使用rust 1.77版本，若编译失败 请修改此处升级版本 "
-            rustup install 1.77
-            rustup default 1.77
+            rustup target add ${{ env.TARGET }}
           fi
-          rustup target add ${{ env.TARGET }}
+          
           #添加交叉编译配置
           cat >>~/.cargo/config <<EOF
           [target.x86_64-unknown-linux-musl]
@@ -248,14 +260,39 @@ jobs:
           [target.arm-unknown-linux-musleabihf]
           linker = "arm-linux-musleabihf-gcc"
           rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.mipsel-unknown-linux-musl]
-          linker = "mipsel-linux-muslsf-gcc"
+
+          [target.x86_64-pc-windows-msvc]
           rustflags = ["-C", "target-feature=+crt-static"]
           
+          [target.i686-pc-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
+
+          [target.aarch64-pc-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
+
+          [target.x86_64-apple-darwin]
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.aarch64-apple-darwin]
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.mipsel-unknown-linux-musl]
+          linker = "/opt/musl_gcc/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static",
+          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
+          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
+          "-l", "atomic",
+          "-l", "ctz",
+          "-l", "gcc"]
+          
           [target.mips-unknown-linux-musl]
-          linker = "mips-linux-muslsf-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]      
+          linker = "/opt/musl_gcc/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static",
+          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
+          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
+          "-l", "atomic",
+          "-l", "ctz",
+          "-l", "gcc"]      
           EOF
       - name: 打印版本信息 (Rust, cargo, GCC)
         shell: bash
@@ -279,12 +316,21 @@ jobs:
       - name: 编译dufs
         shell: bash
         run: |
+          echo "开始修改 Cargo.toml 写入 thunk-rs 以支持win7..."
+          printf '\n[target.x86_64-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n\n[target.i686-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n\n[target.aarch64-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n' >> Cargo.toml
+          echo "创建 build.rs 文件..."
+          printf '// 配置 thunk-rs 来链接 Windows 7 兼容库，并自动设置链接参数\n#[cfg(target_os = "windows")]\nfn main() {\n    if !std::env::var("TARGET").unwrap_or_default().contains("aarch64") {\n        thunk::thunk();\n    }\n}\n\n#[cfg(not(target_os = "windows"))]\nfn main() {}\n' > build.rs
+            
           if [[ $TARGET == 'aarch64-apple-darwin' || $TARGET == 'aarch64-pc-windows-msvc' || $TARGET == 'i686-pc-windows-msvc' || $TARGET == 'x86_64-unknown-freebsd' ]]; then
             echo "编译： cross build --locked --release --target=${{ matrix.target }}"
-            cross build --locked --release --target=${{ matrix.target }}
+            cross build --release --target=${{ matrix.target }}
           else
             echo "编译： cargo build --locked --release --target=${{ matrix.target }}"
-            cargo build --locked --release --target=${{ matrix.target }}
+            if [[ $TARGET =~ ^mips.*$ ]]; then
+              cargo +nightly-2026-02-02 build --release --target=${{ matrix.target }} -Z build-std=std,panic_abort
+            else
+              cargo build --release --target=${{ matrix.target }}
+            fi
           fi
             
           cd target/${{ matrix.target }}/release
@@ -296,12 +342,12 @@ jobs:
           fi
           
           ls -alh ./out/
-          echo "build_time=$(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+          echo "build_time=$(TZ=UTC-8 date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
       - name: 安装 UPX
         if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
         uses: crazy-max/ghaction-upx@v3
         with:
-          version: latest
+          version: v4.2.4
           install-only: true
       - name: 压缩程序
         if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
@@ -315,12 +361,38 @@ jobs:
           name: dufs-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/out/*
 
+  release:
+    needs: build-dufs
+    env:
+      TAG: ${{ needs.build-dufs.outputs.TAG }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v5
+
+      - name: 下载已上传的文件
+        uses: actions/download-artifact@v4
+        with:
+         path: dufs_files
+
+      - name: 设置构建时间
+        run: |
+         mkdir -p release
+         sudo timedatectl set-timezone "Asia/Shanghai"
+         # 遍历下载的每个 artifact 子文件夹，把里面的二进制移动到 release/
+         for dir in dufs_files/*; do
+          if [ -d "$dir" ]; then
+           mv "$dir"/* release/
+          fi
+         done
+         echo "build_time=$(date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
+
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
             token: ${{ github.token }}
             body: |
-             > ### 编译时间 ：${{ env.build_time }}
+             > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ env.TAG }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github) 
 
               **-upx** 后缀的 为upx压缩文件
               
@@ -329,15 +401,36 @@ jobs:
               ${{ github.event.inputs.info }}
               
             tag_name: ${{ env.TAG }}
-            files: target/${{ matrix.target }}/release/out/*
+            files: release/*
   keepalive-workflow:
-    name: 工作流保活
+    # github超过60天未提交将自动停止工作流
+    name: 工作流保活 
     runs-on: ubuntu-latest
     permissions:
       actions: write
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: gautamkrishnar/keepalive-workflow@v2
+      #- uses: gautamkrishnar/keepalive-workflow@v2
         #with:
           #use_api: true
+      - name: 检查上次提交日期
+        id: check_commit_date
+        run: |
+          # 获取上次提交日期（格式：YYYY-MM-DD）
+          LAST_COMMIT_DATE=$(git log -1 --format=%cd --date=short)
+          echo "上次提交日期: $LAST_COMMIT_DATE"
+          # 计算当前日期和上次提交日期的差值（单位：天）
+          LAST_COMMIT_TIMESTAMP=$(date -d "$LAST_COMMIT_DATE" +%s)
+          CURRENT_TIMESTAMP=$(date +%s)
+          DIFF_DAYS=$(( (CURRENT_TIMESTAMP - LAST_COMMIT_TIMESTAMP) / 86400 ))
+          echo "距离上次提交以来的天数: $DIFF_DAYS"
+          echo "diff_days=$DIFF_DAYS" >> $GITHUB_ENV
+      - name: 执行空提交
+        if: ${{ env.diff_days > 50 }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 创建空提交
+          git commit --allow-empty -m "自动空提交，保持仓库活跃"
+          git push
