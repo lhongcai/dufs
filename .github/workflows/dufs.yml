@@ -61,9 +61,21 @@ jobs:
             os: macos-latest
             NAME: dufs-aarch64-apple-darwin
 
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            NAME: dufs-aarch64-pc-windows-msvc.exe
+
           - target: x86_64-apple-darwin
             os: macos-latest
             NAME: dufs-x86_64-apple-darwin
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            NAME: dufs-x86_64-pc-windows-msvc.exe
+
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            NAME: dufs-i686-pc-windows-msvc.exe
 
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
@@ -114,18 +126,6 @@ jobs:
             os: ubuntu-latest
             NAME: dufs-x86_64-freebsd
 
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            NAME: dufs-x86_64-pc-windows-msvc.exe
-
-          - target: i686-pc-windows-msvc
-            os: windows-latest
-            NAME: dufs-i686-pc-windows-msvc.exe
-
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            NAME: dufs-aarch64-pc-windows-msvc.exe
-
     runs-on: ${{ matrix.os }}
     env:
       TARGET: ${{ matrix.target }}
@@ -139,14 +139,18 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ env.BJ }}" == "true" ]]; then
+            echo "强制进行编译..."
             if [[ -n "${{ github.event.inputs.branch }}" ]]; then
+                echo "使用手动指定的版本：${{ github.event.inputs.branch }}"
                 TAG=${{ github.event.inputs.branch }}
                 echo "TAG=$TAG" >> $GITHUB_ENV
             else
+                echo "使用自动获取的版本：${{ needs.check.outputs.tag }}"
                 TAG=${{ needs.check.outputs.tag }}
                 echo "TAG=$TAG" >> $GITHUB_ENV
             fi
           else
+            echo "使用自动获取的版本：${{ needs.check.outputs.tag }}"
             TAG=${{ needs.check.outputs.tag }}
             echo "TAG=$TAG" >> $GITHUB_ENV
           fi
@@ -157,20 +161,20 @@ jobs:
           repository: sigoden/dufs
           ref: ${{ env.TAG }}
 
-      - name: 安装 rust-toolchain (非Windows)
-        if: ${{ runner.os != 'Windows' }}
+      - name: 下载apple-windows工具链
+        if: ${{ matrix.TARGET == 'aarch64-apple-darwin' || matrix.TARGET == 'aarch64-pc-windows-msvc' || matrix.TARGET == 'x86_64-apple-darwin' || matrix.TARGET == 'x86_64-pc-windows-msvc' || matrix.TARGET == 'i686-pc-windows-msvc' || matrix.TARGET == 'x86_64-unknown-freebsd' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: 安装 cross (仅部分非Windows目标)
-        if: ${{ runner.os != 'Windows' && (matrix.target == 'aarch64-apple-darwin' || matrix.target == 'aarch64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc' || matrix.target == 'x86_64-unknown-freebsd') }}
+      - name: 下载apple-windows编译工具
+        if: ${{ matrix.TARGET == 'aarch64-apple-darwin' || matrix.TARGET == 'aarch64-pc-windows-msvc' || matrix.TARGET == 'i686-pc-windows-msvc' || matrix.TARGET == 'x86_64-unknown-freebsd' }}
         uses: taiki-e/install-action@v2
         with:
           tool: cross
 
-      - name: 安装musl工具链 (only Linux)
-        if: ${{ runner.os == 'Linux' && matrix.target != 'aarch64-apple-darwin' && matrix.target != 'aarch64-pc-windows-msvc' && matrix.target != 'x86_64-apple-darwin' && matrix.target != 'x86_64-pc-windows-msvc' && matrix.target != 'i686-pc-windows-msvc' && matrix.target != 'x86_64-unknown-freebsd' }}
+      - name: 下载linux编译工具
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
         run: |
           mkdir -p /opt/musl_gcc
           rustup set auto-self-update disable
@@ -267,28 +271,7 @@ jobs:
           cargo -V
           rustc -V
 
-      # windows平台补丁与编译
-      - name: 添加 thunk-rs 补丁与 build.rs (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          Add-Content Cargo.toml "`n[target.${env:TARGET}.build-dependencies]`nthunk-rs = { version = '0.3.3', features = ['win7'] }`n"
-          Set-Content build.rs "// thunk-rs win7 static link`n#[cfg(target_os = 'windows')]`nfn main() {if !std::env::var('TARGET').unwrap_or_default().contains('windows') {return;} println!(\"cargo:rustc-link-lib=static=thunk\");}`n#[cfg(not(target_os = \"windows\"))]`nfn main() {}"
-
-      - name: 编译dufs (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: pwsh
-        run: |
-          cargo build --release --target $env:TARGET
-          cd "target\$env:TARGET\release"
-          mkdir out
-          Move-Item "dufs.exe" "out\$env:NAME"
-          Get-ChildItem "out"
-          echo "build_time=$([System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId((Get-Date),'Asia/Shanghai')).ToString('yyyy年MM月dd日HH:mm:ss')" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      # 非windows平台编译
-      - name: 编译dufs (非Windows)
-        if: ${{ runner.os != 'Windows' }}
+      - name: 编译dufs
         shell: bash
         run: |
           echo "开始修改 Cargo.toml 写入 thunk-rs 以支持win7..."
@@ -310,19 +293,24 @@ jobs:
 
           cd target/${{ matrix.target }}/release
           mkdir -p ./out
-          mv ./dufs ./out/${{ matrix.NAME }}
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            mv ./dufs.exe ./out/${{ matrix.NAME }}
+          else
+            mv ./dufs ./out/${{ matrix.NAME }}
+          fi
+
           ls -alh ./out/
           echo "build_time=$(TZ=UTC-8 date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
 
       - name: 安装 UPX
-        if: ${{ runner.os != 'Windows' && matrix.target != 'aarch64-apple-darwin' && matrix.target != 'aarch64-pc-windows-msvc' && matrix.target != 'x86_64-apple-darwin' && matrix.target != 'x86_64-pc-windows-msvc' && matrix.target != 'i686-pc-windows-msvc' && matrix.target != 'x86_64-unknown-freebsd' }}
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
         uses: crazy-max/ghaction-upx@v3
         with:
           version: v4.2.4
           install-only: true
 
       - name: 压缩程序
-        if: ${{ runner.os != 'Windows' && matrix.target != 'aarch64-apple-darwin' && matrix.target != 'aarch64-pc-windows-msvc' && matrix.target != 'x86_64-apple-darwin' && matrix.target != 'x86_64-pc-windows-msvc' && matrix.target != 'i686-pc-windows-msvc' && matrix.target != 'x86_64-unknown-freebsd' }}
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
         run: |
           cd target/${{ matrix.target }}/release/out
           cp ${{ matrix.NAME }} ${{ matrix.NAME }}-upx
@@ -332,9 +320,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dufs-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/release/out/*
-            target/${{ matrix.target }}/release/out/*.exe
+          path: target/${{ matrix.target }}/release/out/*
 
   release:
     needs: build-dufs
@@ -378,6 +364,7 @@ jobs:
           files: release/*
 
   keepalive-workflow:
+    # github超过60天未提交将自动停止工作流
     name: 工作流保活 
     runs-on: ubuntu-latest
     permissions:
