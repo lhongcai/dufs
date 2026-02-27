@@ -72,11 +72,6 @@ jobs:
         run: |
           pnpm install
           DUFS_EMBED_FILENAME=1 pnpm run build
-      - name: Upload assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: dufs-自定义页面
-          path: dist
 
   
   build-dufs:
@@ -302,6 +297,7 @@ jobs:
           rustup default
           cargo -V
           rustc -V
+          
       - name: 编译dufs
         shell: bash
         run: |
@@ -358,6 +354,11 @@ jobs:
     steps:
       - name: Checkout 代码
         uses: actions/checkout@v5
+
+      - name: 下载已上传的文件
+        uses: actions/download-artifact@v4
+        with:
+         path: dufs_files
 
       - name: 设置构建时间
         run: |
