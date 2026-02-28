@@ -1,160 +1,280 @@
-#!/bin/bash
+name: 编译官方原版dufs
 
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '指定编译[sigoden/dufs]的版本号或分支'
+        required: true
+        default: 'v0.45.0'
+        
+permissions:
+  contents: write
+  actions: write
+  
+env:
+  TZ: Asia/Shanghai
+  CARGO_TERM_COLOR: always
+  BRANCH: ${{ github.event.inputs.branch }}
 
-# 1.获取token
-# 获取token文档：https://blog.cloudflare.com/zh-cn/api-tokens-general-availability-zh-cn
+jobs:
+  build-dufs:
+    name: 🛠 编译 ${{ matrix.NAME }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        
+        - target: aarch64-apple-darwin
+          os: macos-latest
+          NAME: dufs-aarch64-apple-darwin
+          
+        - target: aarch64-pc-windows-msvc
+          os: windows-latest
+          NAME: dufs-aarch64-pc-windows-msvc.exe
+          
+        - target: x86_64-apple-darwin
+          os: macos-latest
+          NAME: dufs-x86_64-apple-darwin
+          
+        - target: x86_64-pc-windows-msvc
+          os: windows-latest
+          NAME: dufs-x86_64-pc-windows-msvc.exe
+          
+        - target: i686-pc-windows-msvc
+          os: windows-latest
+          NAME: dufs-i686-pc-windows-msvc.exe
+          
+        - target: aarch64-unknown-linux-musl
+          os: ubuntu-latest
+          URL: aarch64-linux-musl
+          NAME: dufs-aarch64-linux-musl
+          
+        - target: x86_64-unknown-linux-musl
+          os: ubuntu-latest
+          URL: x86_64-linux-musl
+          NAME: dufs-x86_64-linux-musl
+            
+        - target: i686-unknown-linux-musl
+          os: ubuntu-latest
+          URL: i686-linux-musl
+          NAME: dufs-i686-linux-musl
+        
+        - target: armv7-unknown-linux-musleabihf
+          os: ubuntu-latest
+          URL: armv7l-linux-musleabihf
+          NAME: dufs-armv7-linux-musleabihf
 
-# 脚本来源于：https://blog.quzei.com/archives/cEPs1PFY
-# 2026-2-26进行改版
+        - target: armv7-unknown-linux-musleabi
+          os: ubuntu-latest
+          URL: armv7m-linux-musleabi
+          NAME: dufs-armv7-linux-musleabi
+          
+        - target: arm-unknown-linux-musleabihf
+          os: ubuntu-latest
+          URL: arm-linux-musleabihf
+          NAME: dufs-arm-linux-musleabihf
 
+        - target: arm-unknown-linux-musleabi
+          os: ubuntu-latest
+          URL: arm-linux-musleabi
+          NAME: dufs-arm-linux-musleabi
 
-# 检查参数
-if [ 1 -ge "$#" ]; then
-    echo "使用方法: <域名> <TOKEN> [<mac/IPV6后缀/wan口>]"
-    echo "示例1: df.abc.xyz dkkdjkfdjkdaa"
-    echo "示例2: df.abc.xyz dkkdjkfdjkdaa 64:db:8b:4d:7a5:55"
-    echo "示例3: df.abc.xyz dkkdjkfdjkdaa 566f:24c1:f13:fa71"
-    echo "示例4: df.abc.xyz dkkdjkfdjkdaa :1"
-    echo "示例5: df.abc.xyz dkkdjkfdjkdaa wan"
-    exit 1
-fi
+        - target: mipsel-unknown-linux-musl
+          os: ubuntu-latest
+          URL: mipsel-linux-muslsf
+          NAME: dufs-mipsel-linux-muslsf
 
-ddns=$1
-CF_API_TOKEN=$2
-SUFFIX=$3
-RECORD_TYPE=AAAA
-NEW_VALUE=ip
+        - target: mips-unknown-linux-musl
+          os: ubuntu-latest
+          URL: mips-linux-muslsf
+          NAME: dufs-mips-linux-muslsf
 
-LOG_() {
-    logger -t "【运行cloudflare_IPV6_ddns脚本】" "$1"
-echo -e "\033[36;1m【$(TZ=UTC-8 date -R +%Y年%m月%d月\ %X)】 : \033[0m\033[35;1m$1 \033[0m"
-}
+        - target: x86_64-unknown-freebsd
+          os: ubuntu-latest
+          NAME: dufs-x86_64-freebsd
+            
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      URL: ${{ matrix.URL }}
+      NAME: ${{ matrix.NAME }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: sigoden/dufs
+          ref: ${{ github.event.inputs.branch }}
+          
+      - name: 下载apple-windows工具链
+        if: ${{ matrix.TARGET == 'aarch64-apple-darwin' || matrix.TARGET == 'aarch64-pc-windows-msvc' || matrix.TARGET == 'x86_64-apple-darwin' || matrix.TARGET == 'x86_64-pc-windows-msvc' || matrix.TARGET == 'i686-pc-windows-msvc' || matrix.TARGET == 'x86_64-unknown-freebsd' }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          
+      - name: 下载apple-windows编译工具
+        if: ${{ matrix.TARGET == 'aarch64-apple-darwin' || matrix.TARGET == 'aarch64-pc-windows-msvc' || matrix.TARGET == 'i686-pc-windows-msvc' || matrix.TARGET == 'x86_64-unknown-freebsd' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: 下载linux编译工具
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
+        run: |
+          mkdir -p /opt/musl_gcc
+          rustup set auto-self-update disable
+          echo "下载https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz"
+          wget -q -c https://github.com/lmq8267/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz -P /opt/musl_gcc/
+          tar zxf /opt/musl_gcc/${{ env.URL }}-cross.tgz -C /opt/musl_gcc/
+          sudo ln -s /opt/musl_gcc/${{ env.URL }}-cross/bin/*gcc /usr/bin/
+          sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+          if [[ $TARGET =~ ^mips.*$ ]]; then
+            cd "/opt/musl_gcc/${{ env.URL }}-cross/lib/gcc/${{ env.URL }}/11.2.1" || exit 255
+            cp libgcc_eh.a libunwind.a
+            ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
+            ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
 
-[ ! -d "/tmp/log" ] && mkdir "/tmp/log"
-IPV6LOG="/tmp/log/[${ddns}].log"
+            rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
+            rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
+            # https://github.com/rust-lang/rust/issues/128808
+            # remove it after Cargo or rustc fix this.
+            RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
+            if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then 
+               cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
+            fi
+          else
+            rustup target add ${{ env.TARGET }}
+          fi
+          
+          #添加交叉编译配置
+          cat >>~/.cargo/config <<EOF
+          [target.x86_64-unknown-linux-musl]
+          linker = "x86_64-linux-musl-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.i686-unknown-linux-musl]
+          linker = "i686-linux-musl-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"] 
+          
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-musl-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.armv7-unknown-linux-musleabi]
+          linker = "armv7m-linux-musleabi-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
 
+          [target.armv7-unknown-linux-musleabihf]
+          linker = "armv7l-linux-musleabihf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.arm-unknown-linux-musleabi]
+          linker = "arm-linux-musleabi-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
 
+          [target.arm-unknown-linux-musleabihf]
+          linker = "arm-linux-musleabihf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static"]
 
-SUBDOMAIN=$(echo "${ddns}" | cut -d . -f 1)
-DOMAIN=$(echo "${ddns}" | cut -d . -f 2-5)
+          [target.x86_64-pc-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.i686-pc-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
 
-LINE=1
-[ "$3" = "wan" ] && LINE=2
-ip=$(ip -6 a |grep 'scope global'|grep -v temporary|grep -v deprecated |grep -v ' fd' |grep -v /128 | awk -F '/|inet6 ' 'NR=='"${LINE}"'{print $2;}')
+          [target.aarch64-pc-windows-msvc]
+          rustflags = ["-C", "target-feature=+crt-static"]
 
-
-
-
-# IPV6前缀
-PREFIX=$(echo $ip | cut -d: -f1-4)
-
-if [ -z "${PREFIX}" ] ; then
-
-LOG_ "[${ddns}] 获取IPV6错误！"
-exit 1
-fi
-
-SUF_FIX=`echo ${SUFFIX} | tr A-Z a-z | tr - :`
-
-#a=`echo ${SUF_FIX} | grep -oE '[a-f0-9]{1,4}(:[a-f0-9]{1,4}){3}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){0,3}::[a-f0-9]{0,4}(:[a-f0-9]{1,4}){0,3}'`
-a=$(echo ${SUF_FIX} | grep -oE '[a-f0-9]{1,4}(:[a-f0-9]{1,4}){3}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){0,3}::[a-f0-9]{0,4}(:[a-f0-9]{1,4}){0,3}|[a-f0-9]{0,4}(:[a-f0-9]{1,4}){0,3}')
-b=$(echo ${SUF_FIX} | grep -oE '[a-f0-9]{1,2}(:[a-f0-9]{1,2}){5}')
-
-if [ "${SUFFIX}" = "wan" ] ; then
-IPV6=$ip
-else
-if [ -z "${SUF_FIX}" ] ; then
-IPV6=$ip
-elif [ "${a}" == "${SUF_FIX}" ] ; then
-IPV6="${PREFIX}:${SUF_FIX}"
-elif [ "${b}" == "${SUF_FIX}" ] ; then
-
-IPV6_NEI=$(ip -6 nei |grep ${SUF_FIX} |grep -oE '[a-f0-9]{1,4}(:[a-f0-9]{1,4}){7}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){0,7}::[a-f0-9]{0,4}(:[a-f0-9]{1,4}){0,7}'|grep ^2) 
-	if [ -z "${IPV6_NEI}" ] ; then
-		LOG_ "未找到与“$SUF_FIX”MAC地址对应的IPV6地址"
-		exit 1
-	else
-		IPV6="${IPV6_NEI}"
-	fi
-else
-
-	LOG_ "请优先输入正确的固定后缀，无固定后缀请输入设备的MAC地址，本机可以不输入！"
-exit 1
-fi
-fi
-##如果第三个参数为空时，为路由器自身的IPV6后缀，否则是设备的IPV6。
-
-if [ -f "${IPV6LOG}" ] ; then
-OLDIPV6=$(tail -n 1 "${IPV6LOG}")
-else
-OLDIPV6="::"
-fi
-
-if [ "${IPV6}" = "$OLDIPV6" ] ; then
-LOG_ "[${ddns}] IPV6无变化！"
-exit 0
-fi
-
-####################################################################
-RETRY='--retry 3 --retry-delay 2 --retry-max-time 10 -ks'
-
-
-# 获取 Zone ID
-zone_response=$(curl ${RETRY} -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
-     -H "Authorization: Bearer $CF_API_TOKEN" \
-     -H "Content-Type: application/json")
-
-#ZONE_ID=$(echo $zone_response | jq -r '.result[0].id')
-ZONE_ID=$(echo "${zone_response}" | sed -e "s/ //g" |grep -o "id\":\"[0-9a-z]*\",\"name\":\"${DOMAIN}\",\"status\""|grep -o "id\":\"[0-9a-z]*\""| awk -F : '{print $2}'|grep -o "[a-z0-9]*")
-
-if [ -z "$ZONE_ID" ]; then
-    LOG_ "获取域名 Zone ID 失败: $DOMAIN，请检查你的token区域权限"
-    exit 1
-fi
-
-# 获取 DNS 记录 ID
-record_response=$(curl ${RETRY} -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?name=$SUBDOMAIN.$DOMAIN" \
-     -H "Authorization: Bearer $CF_API_TOKEN" \
-     -H "Content-Type: application/json")
-
-#RECORD_ID=$(echo ${record_response} | jq -r '.result[0].id')
-RECORD_ID=$(echo "${record_response}" | sed -e "s/ //g" | sed -e "s/"'"ttl":'"/"' \n '"/g" | grep "type\":\"${RECORD_TYPE}\"" | grep ",\"name\":\"${SUBDOMAIN}.${DOMAIN}\"" | grep -o "\"id\":\"[0-9a-z]\{32,\}\",\"" | awk -F : '{print $2}'|grep -o "[a-z0-9]*")
-
-# 如果记录不存在则创建新的记录
-if [ -z "$RECORD_ID" ] || [ "$RECORD_ID" == "null" ]; then
-    LOG_ "DNS 记录不存在，创建新的记录..."
-    response=$(curl ${RETRY} -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
-         -H "Authorization: Bearer $CF_API_TOKEN" \
-         -H "Content-Type: application/json" \
-         --data '{
-           "type": "'"$RECORD_TYPE"'",
-           "name": "'"$SUBDOMAIN.$DOMAIN"'",
-           "content": "'"${IPV6}"'",
-           "ttl": 600,
-           "proxied": false
-         }')
-else
-    LOG_ "DNS 记录存在，更新记录..."
-    response=$(curl ${RETRY} -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID" \
-         -H "Authorization: Bearer $CF_API_TOKEN" \
-         -H "Content-Type: application/json" \
-         --data '{
-           "type": "'"$RECORD_TYPE"'",
-           "name": "'"$SUBDOMAIN.$DOMAIN"'",
-           "content": "'"${IPV6}"'",
-           "ttl": 600,
-           "proxied": false
-         }')
-fi
-
-# 检查操作是否成功
-if echo "$response" | grep -q '"success":true'; then
-    LOG_ "DNS 记录操作成功。"
-    echo >> "${IPV6LOG}"
-    echo  "[$(date +%F' '%X)] IPV6地址更新——>" >> "${IPV6LOG}"
-    echo "${IPV6}" >> "${IPV6LOG}"
-    
-else
-    LOG_ "DNS 记录操作失败。"
-    LOG_ "响应: $response"
-fi
+          [target.x86_64-apple-darwin]
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.aarch64-apple-darwin]
+          rustflags = ["-C", "target-feature=+crt-static"]
+          
+          [target.mipsel-unknown-linux-musl]
+          linker = "/opt/musl_gcc/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static",
+          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
+          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
+          "-l", "atomic",
+          "-l", "ctz",
+          "-l", "gcc"]
+          
+          [target.mips-unknown-linux-musl]
+          linker = "/opt/musl_gcc/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
+          rustflags = ["-C", "target-feature=+crt-static",
+          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
+          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
+          "-l", "atomic",
+          "-l", "ctz",
+          "-l", "gcc"]      
+          EOF
+      - name: 打印版本信息 (Rust, cargo, GCC)
+        shell: bash
+        run: |
+          rustup -V
+          rustup toolchain list
+          rustup default
+          cargo -V
+          rustc -V
+          
+      - name: 编译dufs
+        shell: bash
+        run: |
+          echo "开始修改 Cargo.toml 写入 thunk-rs 以支持win7..."
+          printf '\n[target.x86_64-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n\n[target.i686-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n\n[target.aarch64-pc-windows-msvc.build-dependencies]\nthunk-rs = { version = "0.3.3", features = ["win7"] }\n' >> Cargo.toml
+          echo "创建 build.rs 文件..."
+          printf '// 配置 thunk-rs 来链接 Windows 7 兼容库，并自动设置链接参数\n#[cfg(target_os = "windows")]\nfn main() {\n    if !std::env::var("TARGET").unwrap_or_default().contains("aarch64") {\n        thunk::thunk();\n    }\n}\n\n#[cfg(not(target_os = "windows"))]\nfn main() {}\n' > build.rs
+            
+          if [[ $TARGET == 'aarch64-apple-darwin' || $TARGET == 'aarch64-pc-windows-msvc' || $TARGET == 'i686-pc-windows-msvc' || $TARGET == 'x86_64-unknown-freebsd' ]]; then
+            echo "编译： cross build --locked --release --target=${{ matrix.target }}"
+            cross build --release --target=${{ matrix.target }}
+          else
+            echo "编译： cargo build --locked --release --target=${{ matrix.target }}"
+            if [[ $TARGET =~ ^mips.*$ ]]; then
+              cargo +nightly-2026-02-02 build --release --target=${{ matrix.target }} -Z build-std=std,panic_abort
+            else
+              cargo build --release --target=${{ matrix.target }}
+            fi
+          fi
+            
+          cd target/${{ matrix.target }}/release
+          mkdir -p ./out
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            mv ./dufs.exe ./out/${{ matrix.NAME }}
+          else
+            mv ./dufs ./out/${{ matrix.NAME }}
+          fi
+          
+          ls -alh ./out/
+          echo "build_time=$(TZ=UTC-8 date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
+      - name: 安装 UPX
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: v4.2.4
+          install-only: true
+      - name: 压缩程序
+        if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
+        run: |
+          cd target/${{ matrix.target }}/release/out
+          cp ${{ matrix.NAME }} ${{ matrix.NAME }}-upx
+          upx --lzma --best ${{ matrix.NAME }}-upx
+      - name: 上传程序
+        uses: actions/upload-artifact@v4
+        with:
+          name: dufs-${{ github.event.inputs.branch }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/out/*
+          
+  delete-workflow-runs:
+    name: 删除工作流 
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      -  name: 删除工作流
+         uses: Mattraks/delete-workflow-runs@main
+         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          retain_days: 0
+          keep_minimum_runs: 0
+          
