@@ -307,12 +307,6 @@ jobs:
         with:
           name: dufs-自定义页面
           path: dufs-material-assets-embed
-#      - name: 替换自定义 assets 页面
-#        shell: bash
-#        run: |
-#         cp dufs-material-assets-embed/index.css assets/index.css
-#          cp dufs-material-assets-embed/index.html assets/index.html
-#         cp dufs-material-assets-embed/index.js assets/index.js
       - name: 编译dufs
         shell: bash
         run: |
