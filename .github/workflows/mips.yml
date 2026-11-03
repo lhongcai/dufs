@@ -149,6 +149,13 @@ jobs:
           echo "SYSROOT_LIB_DIR=$SYSROOT_LIB_DIR"
           echo "GCC_LIB_DIR=$GCC_LIB_DIR"
 
+          # Rust std 的 unwind crate 会链接 -lunwind，但 musl 工具链没有 libunwind.a；
+          # libgcc_eh.a 提供了所需的 unwind 符号，复制一份命名为 libunwind.a 供链接器找到
+          if [[ -n "$GCC_LIB_DIR" && -f "$GCC_LIB_DIR/libgcc_eh.a" && ! -f "$GCC_LIB_DIR/libunwind.a" ]]; then
+            sudo cp -f "$GCC_LIB_DIR/libgcc_eh.a" "$GCC_LIB_DIR/libunwind.a"
+            echo "已创建 $GCC_LIB_DIR/libunwind.a (copy of libgcc_eh.a)"
+          fi
+
           # 构造 rustflags：crt-static + 显式 -L 路径，避免链接器找不到 crti.o / libgcc.a
           RUSTFLAGS='["-C", "target-feature=+crt-static"'
           if [[ -n "$SYSROOT_LIB_DIR" ]]; then
@@ -157,7 +164,7 @@ jobs:
           if [[ -n "$GCC_LIB_DIR" ]]; then
             RUSTFLAGS+=", \"-L\", \"$GCC_LIB_DIR\""
           fi
-          RUSTFLAGS+=", \"-l\", \"atomic\", \"-l\", \"gcc\""
+          RUSTFLAGS+=", \"-l\", \"atomic\""
           RUSTFLAGS+=']'
 
           cat >>"$HOME/.cargo/config" <<EOF
