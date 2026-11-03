@@ -110,47 +110,38 @@ jobs:
           
         - target: aarch64-unknown-linux-musl
           os: ubuntu-latest
-          URL: aarch64-linux-musl
           NAME: dufs-aarch64-linux-musl
           
         - target: x86_64-unknown-linux-musl
           os: ubuntu-latest
-          URL: x86_64-linux-musl
           NAME: dufs-x86_64-linux-musl
             
         - target: i686-unknown-linux-musl
           os: ubuntu-latest
-          URL: i686-linux-musl
           NAME: dufs-i686-linux-musl
         
         - target: armv7-unknown-linux-musleabihf
           os: ubuntu-latest
-          URL: armv7l-linux-musleabihf
           NAME: dufs-armv7-linux-musleabihf
 
         - target: armv7-unknown-linux-musleabi
           os: ubuntu-latest
-          URL: armv7m-linux-musleabi
           NAME: dufs-armv7-linux-musleabi
           
         - target: arm-unknown-linux-musleabihf
           os: ubuntu-latest
-          URL: arm-linux-musleabihf
           NAME: dufs-arm-linux-musleabihf
 
         - target: arm-unknown-linux-musleabi
           os: ubuntu-latest
-          URL: arm-linux-musleabi
           NAME: dufs-arm-linux-musleabi
 
         - target: mipsel-unknown-linux-musl
           os: ubuntu-latest
-          URL: mipsel-linux-muslsf
           NAME: dufs-mipsel-linux-muslsf
 
         - target: mips-unknown-linux-musl
           os: ubuntu-latest
-          URL: mips-linux-muslsf
           NAME: dufs-mips-linux-muslsf
 
         - target: x86_64-unknown-freebsd
@@ -160,7 +151,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       TARGET: ${{ matrix.target }}
-      URL: ${{ matrix.URL }}
       NAME: ${{ matrix.NAME }}
     outputs:
       TAG: ${{ steps.set-tag.outputs.TAG }}
@@ -205,62 +195,69 @@ jobs:
           tool: cross
       - name: 下载linux编译工具
         if: ${{ matrix.TARGET != 'aarch64-apple-darwin' && matrix.TARGET != 'aarch64-pc-windows-msvc' && matrix.TARGET != 'x86_64-apple-darwin' && matrix.TARGET != 'x86_64-pc-windows-msvc' && matrix.TARGET != 'i686-pc-windows-msvc' && matrix.TARGET != 'x86_64-unknown-freebsd' }}
+        shell: bash
         run: |
-          mkdir -p /opt/musl_gcc
-          rustup set auto-self-update disable
-          echo "下载https://github.com/CE-Programming/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz"
-          wget -q -c https://github.com/CE-Programming/Toolchain/releases/download/musl-cross/${{ env.URL }}-cross.tgz -P /opt/musl_gcc/
-          tar zxf /opt/musl_gcc/${{ env.URL }}-cross.tgz -C /opt/musl_gcc/
-          sudo ln -s /opt/musl_gcc/${{ env.URL }}-cross/bin/*gcc /usr/bin/
-          sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
-          if [[ $TARGET =~ ^mips.*$ ]]; then
-            cd "/opt/musl_gcc/${{ env.URL }}-cross/lib/gcc/${{ env.URL }}/11.2.1" || exit 255
-            cp libgcc_eh.a libunwind.a
-            ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
-            ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
+          # 工具链来源：https://github.com/cross-tools/musl-cross/releases
+          TOOLCHAIN_RELEASE="20261001"
+          # Rust 的 mips/mipsel musl 目标是软浮点（+soft-float），需使用对应的 muslsf 工具链
+          TOOLCHAIN_NAME="$TARGET"
+          if [[ "$TARGET" == "mips-unknown-linux-musl" ]]; then
+            TOOLCHAIN_NAME="mips-unknown-linux-muslsf"
+          elif [[ "$TARGET" == "mipsel-unknown-linux-musl" ]]; then
+            TOOLCHAIN_NAME="mipsel-unknown-linux-muslsf"
+          fi
 
-            rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
-            rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
+          TOOLCHAIN_DIR="/opt/x-tools/$TOOLCHAIN_NAME"
+          TOOLCHAIN_URL="https://github.com/cross-tools/musl-cross/releases/download/$TOOLCHAIN_RELEASE/$TOOLCHAIN_NAME.tar.xz"
+          echo "下载 $TOOLCHAIN_URL"
+          mkdir -p /opt/musl_gcc
+          curl -fsSL --retry 3 -o "/opt/musl_gcc/$TOOLCHAIN_NAME.tar.xz" "$TOOLCHAIN_URL"
+          sudo mkdir -p /opt/x-tools
+          sudo tar -xJf "/opt/musl_gcc/$TOOLCHAIN_NAME.tar.xz" -C /opt/x-tools
+          if [[ ! -x "$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc" ]]; then
+            echo "工具链解压失败：$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc 不存在"
+            exit 1
+          fi
+          # 加入 PATH，供构建脚本（cc crate）按 <target>-gcc 查找编译器
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          rustup set auto-self-update disable
+          if [[ $TARGET =~ ^mips.*$ ]]; then
+            # muslsf 工具链的编译器前缀与 Rust 目标三元组不同，显式告诉 cc crate 用哪个编译器
+            cc_env="${TARGET//-/_}"
+            echo "CC_${cc_env^^}=$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc" >> "$GITHUB_ENV"
+            echo "AR_${cc_env^^}=$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-ar" >> "$GITHUB_ENV"
+
+            rustup toolchain install nightly-2026-02-02
+            rustup component add rust-src --toolchain nightly-2026-02-02
             # https://github.com/rust-lang/rust/issues/128808
             # remove it after Cargo or rustc fix this.
-            RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
-            if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then 
-               cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
+            RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-2026-02-02-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
+            if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then
+              cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
             fi
           else
-            rustup target add ${{ env.TARGET }}
+            rustup target add "$TARGET"
           fi
-          
-          #添加交叉编译配置
-          cat >>~/.cargo/config <<EOF
-          [target.x86_64-unknown-linux-musl]
-          linker = "x86_64-linux-musl-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.i686-unknown-linux-musl]
-          linker = "i686-linux-musl-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"] 
-          
-          [target.aarch64-unknown-linux-musl]
-          linker = "aarch64-linux-musl-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.armv7-unknown-linux-musleabi]
-          linker = "armv7m-linux-musleabi-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
 
-          [target.armv7-unknown-linux-musleabihf]
-          linker = "armv7l-linux-musleabihf-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.arm-unknown-linux-musleabi]
-          linker = "arm-linux-musleabi-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
+          # 添加交叉编译配置：链接器直接使用工具链内的 <target>-gcc（gcc 会自动带上 sysroot/libgcc）
+          for item in \
+            aarch64-unknown-linux-musl:aarch64-unknown-linux-musl \
+            x86_64-unknown-linux-musl:x86_64-unknown-linux-musl \
+            i686-unknown-linux-musl:i686-unknown-linux-musl \
+            armv7-unknown-linux-musleabi:armv7-unknown-linux-musleabi \
+            armv7-unknown-linux-musleabihf:armv7-unknown-linux-musleabihf \
+            arm-unknown-linux-musleabi:arm-unknown-linux-musleabi \
+            arm-unknown-linux-musleabihf:arm-unknown-linux-musleabihf \
+            mips-unknown-linux-musl:mips-unknown-linux-muslsf \
+            mipsel-unknown-linux-musl:mipsel-unknown-linux-muslsf; do
+            cfg_target="${item%%:*}"
+            cfg_name="${item##*:}"
+            printf '[target.%s]\nlinker = "/opt/x-tools/%s/bin/%s-gcc"\nrustflags = ["-C", "target-feature=+crt-static"]\n\n' "$cfg_target" "$cfg_name" "$cfg_name" >> "$HOME/.cargo/config"
+          done
 
-          [target.arm-unknown-linux-musleabihf]
-          linker = "arm-linux-musleabihf-gcc"
-          rustflags = ["-C", "target-feature=+crt-static"]
-
+          # Windows / macOS 静态链接配置
+          cat >>"$HOME/.cargo/config" <<EOF
           [target.x86_64-pc-windows-msvc]
           rustflags = ["-C", "target-feature=+crt-static"]
           
@@ -275,24 +272,6 @@ jobs:
           
           [target.aarch64-apple-darwin]
           rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.mipsel-unknown-linux-musl]
-          linker = "/opt/musl_gcc/mipsel-linux-muslsf-cross/bin/mipsel-linux-muslsf-gcc"
-          rustflags = ["-C", "target-feature=+crt-static",
-          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
-          "-L", "/opt/musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
-          "-l", "atomic",
-          "-l", "ctz",
-          "-l", "gcc"]
-          
-          [target.mips-unknown-linux-musl]
-          linker = "/opt/musl_gcc/mips-linux-muslsf-cross/bin/mips-linux-muslsf-gcc"
-          rustflags = ["-C", "target-feature=+crt-static",
-          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
-          "-L", "/opt/musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
-          "-l", "atomic",
-          "-l", "ctz",
-          "-l", "gcc"]      
           EOF
       - name: 打印版本信息 (Rust, cargo, GCC)
         shell: bash
