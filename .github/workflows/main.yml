@@ -240,38 +240,29 @@ jobs:
             rustup target add "$TARGET"
           fi
 
-          # 添加交叉编译配置：链接器直接使用工具链内的 <target>-gcc（gcc 会自动带上 sysroot/libgcc）
-          for item in \
-            aarch64-unknown-linux-musl:aarch64-unknown-linux-musl \
-            x86_64-unknown-linux-musl:x86_64-unknown-linux-musl \
-            i686-unknown-linux-musl:i686-unknown-linux-musl \
-            armv7-unknown-linux-musleabi:armv7-unknown-linux-musleabi \
-            armv7-unknown-linux-musleabihf:armv7-unknown-linux-musleabihf \
-            arm-unknown-linux-musleabi:arm-unknown-linux-musleabi \
-            arm-unknown-linux-musleabihf:arm-unknown-linux-musleabihf \
-            mips-unknown-linux-musl:mips-unknown-linux-muslsf \
-            mipsel-unknown-linux-musl:mipsel-unknown-linux-muslsf; do
-            cfg_target="${item%%:*}"
-            cfg_name="${item##*:}"
-            printf '[target.%s]\nlinker = "/opt/x-tools/%s/bin/%s-gcc"\nrustflags = ["-C", "target-feature=+crt-static"]\n\n' "$cfg_target" "$cfg_name" "$cfg_name" >> "$HOME/.cargo/config"
-          done
+          # 自动定位 sysroot 的 crt 目录和 gcc 的 libgcc 目录（不同目标布局可能不同，用 find 兜底）
+          SYSROOT_LIB_DIR=$(sudo find "$TOOLCHAIN_DIR" -type f -name crti.o -print -quit 2>/dev/null | xargs -r dirname)
+          GCC_LIB_DIR=$(sudo find "$TOOLCHAIN_DIR" -type f -name libgcc.a -print -quit 2>/dev/null | xargs -r dirname)
+          echo "SYSROOT_LIB_DIR=$SYSROOT_LIB_DIR"
+          echo "GCC_LIB_DIR=$GCC_LIB_DIR"
 
-          # Windows / macOS 静态链接配置
+          # 构造 rustflags：crt-static + 显式 -L 路径，避免链接器找不到 crti.o / libgcc.a
+          RUSTFLAGS='["-C", "target-feature=+crt-static"'
+          if [[ -n "$SYSROOT_LIB_DIR" ]]; then
+            RUSTFLAGS+=", \"-L\", \"$SYSROOT_LIB_DIR\""
+          fi
+          if [[ -n "$GCC_LIB_DIR" ]]; then
+            RUSTFLAGS+=", \"-L\", \"$GCC_LIB_DIR\""
+          fi
+          if [[ $TARGET =~ ^mips.*$ ]]; then
+            RUSTFLAGS+=", \"-l\", \"atomic\", \"-l\", \"gcc\""
+          fi
+          RUSTFLAGS+=']'
+
           cat >>"$HOME/.cargo/config" <<EOF
-          [target.x86_64-pc-windows-msvc]
-          rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.i686-pc-windows-msvc]
-          rustflags = ["-C", "target-feature=+crt-static"]
-
-          [target.aarch64-pc-windows-msvc]
-          rustflags = ["-C", "target-feature=+crt-static"]
-
-          [target.x86_64-apple-darwin]
-          rustflags = ["-C", "target-feature=+crt-static"]
-          
-          [target.aarch64-apple-darwin]
-          rustflags = ["-C", "target-feature=+crt-static"]
+          [target.$TARGET]
+          linker = "$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc"
+          rustflags = $RUSTFLAGS
           EOF
       - name: 打印版本信息 (Rust, cargo, GCC)
         shell: bash
