@@ -1,0 +1,254 @@
+name: 编译dufs(mips)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '指定编译的版本号'
+        required: false
+        default: ''
+      info:
+        description: '发布Release的补充说明'
+        required: false
+        default: ''
+permissions:
+  contents: write
+  actions: write
+env:
+  TZ: Asia/Shanghai
+  CARGO_TERM_COLOR: always
+  BRANCH: ${{ github.event.inputs.branch }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.getversion.outputs.tag }}
+    steps:
+      - name: 检查更新
+        id: getversion
+        run: |
+          tag=`curl https://api.github.com/repos/sigoden/dufs/releases/latest | jq -r '.tag_name'`
+          echo "tag=${tag}" >> $GITHUB_OUTPUT
+
+  build-assets:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: TransparentLC/dufs-material-assets
+          ref: master
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: latest
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: latest
+          check-latest: true
+          cache: pnpm
+          cache-dependency-path: "**/package.json"
+      - name: Build assets
+        run: |
+          pnpm install
+          DUFS_EMBED_FILENAME=1 pnpm run build
+      - name: Upload assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: dufs-自定义页面
+          path: dist
+
+  build-dufs:
+    needs:
+      - build-assets
+      - check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mipsel-unknown-linux-musl
+            os: ubuntu-latest
+            NAME: dufs-mipsel-linux-muslsf
+
+          - target: mips-unknown-linux-musl
+            os: ubuntu-latest
+            NAME: dufs-mips-linux-muslsf
+
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+      NAME: ${{ matrix.NAME }}
+    outputs:
+      TAG: ${{ steps.set-tag.outputs.TAG }}
+    steps:
+      - name: 确定版本号
+        id: set-tag
+        shell: bash
+        run: |
+          if [[ -n "${{ github.event.inputs.branch }}" ]]; then
+            echo "使用手动指定的版本：${{ github.event.inputs.branch }}"
+            TAG=${{ github.event.inputs.branch }}
+          else
+            echo "使用自动获取的版本：${{ needs.check.outputs.tag }}"
+            TAG=${{ needs.check.outputs.tag }}
+          fi
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v5
+        with:
+          repository: sigoden/dufs
+          ref: ${{ env.TAG }}
+
+      - name: 下载linux编译工具
+        shell: bash
+        run: |
+          # 工具链来源：https://github.com/cross-tools/musl-cross/releases
+          TOOLCHAIN_RELEASE="20261001"
+          # Rust 的 mips/mipsel musl 目标是软浮点（+soft-float），需使用对应的 muslsf 工具链
+          if [[ "$TARGET" == "mips-unknown-linux-musl" ]]; then
+            TOOLCHAIN_NAME="mips-unknown-linux-muslsf"
+          elif [[ "$TARGET" == "mipsel-unknown-linux-musl" ]]; then
+            TOOLCHAIN_NAME="mipsel-unknown-linux-muslsf"
+          fi
+
+          TOOLCHAIN_DIR="/opt/x-tools/$TOOLCHAIN_NAME"
+          TOOLCHAIN_URL="https://github.com/cross-tools/musl-cross/releases/download/$TOOLCHAIN_RELEASE/$TOOLCHAIN_NAME.tar.xz"
+          echo "下载 $TOOLCHAIN_URL"
+          mkdir -p /opt/musl_gcc
+          curl -fsSL --retry 3 -o "/opt/musl_gcc/$TOOLCHAIN_NAME.tar.xz" "$TOOLCHAIN_URL"
+          sudo mkdir -p /opt/x-tools
+          sudo tar -xJf "/opt/musl_gcc/$TOOLCHAIN_NAME.tar.xz" -C /opt/x-tools
+          if [[ ! -x "$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc" ]]; then
+            echo "工具链解压失败：$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc 不存在"
+            exit 1
+          fi
+          # 加入 PATH，供构建脚本（cc crate）按 <target>-gcc 查找编译器
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+
+          # muslsf 工具链的编译器前缀与 Rust 目标三元组不同，显式告诉 cc crate 用哪个编译器
+          cc_env="${TARGET//-/_}"
+          echo "CC_${cc_env^^}=$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc" >> "$GITHUB_ENV"
+          echo "AR_${cc_env^^}=$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-ar" >> "$GITHUB_ENV"
+
+          rustup set auto-self-update disable
+          rustup toolchain install nightly-2026-02-02
+          rustup component add rust-src --toolchain nightly-2026-02-02
+          # https://github.com/rust-lang/rust/issues/128808
+          # remove it after Cargo or rustc fix this.
+          RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-2026-02-02-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
+          if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then
+            cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
+          fi
+
+          # 自动定位 sysroot 的 crt 目录和 gcc 的 libgcc 目录（不同目标布局可能不同，用 find 兜底）
+          SYSROOT_LIB_DIR=$(sudo find "$TOOLCHAIN_DIR" -type f -name crti.o -print -quit 2>/dev/null | xargs -r dirname)
+          GCC_LIB_DIR=$(sudo find "$TOOLCHAIN_DIR" -type f -name libgcc.a -print -quit 2>/dev/null | xargs -r dirname)
+          echo "SYSROOT_LIB_DIR=$SYSROOT_LIB_DIR"
+          echo "GCC_LIB_DIR=$GCC_LIB_DIR"
+
+          # 构造 rustflags：crt-static + 显式 -L 路径，避免链接器找不到 crti.o / libgcc.a
+          RUSTFLAGS='["-C", "target-feature=+crt-static"'
+          if [[ -n "$SYSROOT_LIB_DIR" ]]; then
+            RUSTFLAGS+=", \"-L\", \"$SYSROOT_LIB_DIR\""
+          fi
+          if [[ -n "$GCC_LIB_DIR" ]]; then
+            RUSTFLAGS+=", \"-L\", \"$GCC_LIB_DIR\""
+          fi
+          RUSTFLAGS+=", \"-l\", \"atomic\", \"-l\", \"gcc\""
+          RUSTFLAGS+=']'
+
+          cat >>"$HOME/.cargo/config" <<EOF
+          [target.$TARGET]
+          linker = "$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc"
+          rustflags = $RUSTFLAGS
+          EOF
+
+      - name: 打印版本信息 (Rust, cargo, GCC)
+        shell: bash
+        run: |
+          rustup -V
+          rustup toolchain list
+          rustup default
+          cargo -V
+          rustc -V
+          "$TOOLCHAIN_DIR/bin/$TOOLCHAIN_NAME-gcc" -v 2>&1 || true
+
+      - name: 下载 assets 页面
+        uses: actions/download-artifact@v4
+        with:
+          name: dufs-自定义页面
+          path: dufs-material-assets-embed
+
+      - name: 编译dufs
+        shell: bash
+        run: |
+          cargo +nightly-2026-02-02 build --release --target=${{ matrix.target }} -Z build-std=std,panic_abort
+
+          cd target/${{ matrix.target }}/release
+          mkdir -p ./out
+          mv ./dufs ./out/${{ matrix.NAME }}
+
+          ls -alh ./out/
+          echo "build_time=$(TZ=UTC-8 date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
+
+      - name: 安装 UPX
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: v4.2.4
+          install-only: true
+
+      - name: 压缩程序
+        run: |
+          cd target/${{ matrix.target }}/release/out
+          cp ${{ matrix.NAME }} ${{ matrix.NAME }}-upx
+          upx --lzma --best ${{ matrix.NAME }}-upx || echo "UPX 压缩失败，跳过"
+
+      - name: 上传程序
+        uses: actions/upload-artifact@v4
+        with:
+          name: dufs-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/out/*
+
+  release:
+    needs: build-dufs
+    env:
+      TAG: ${{ needs.build-dufs.outputs.TAG }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 代码
+        uses: actions/checkout@v5
+
+      - name: 下载已上传的文件
+        uses: actions/download-artifact@v4
+        with:
+          path: dufs_files
+
+      - name: 设置构建时间
+        run: |
+          mkdir -p release
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          for dir in dufs_files/*; do
+            if [ -d "$dir" ]; then
+              mv "$dir"/* release/
+            fi
+          done
+          echo "build_time=$(date '+%Y年%m月%d日%H:%M:%S' | jq -sRr @uri)" >> $GITHUB_ENV
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ github.token }}
+          body: |
+            > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-8267?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{ env.TAG }}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github)
+
+            **-upx** 后缀的 为upx压缩文件
+
+            **[官方更新说明](https://github.com/sigoden/dufs/releases)**
+
+            ${{ github.event.inputs.info }}
+
+          tag_name: ${{ env.TAG }}
+          files: release/*
